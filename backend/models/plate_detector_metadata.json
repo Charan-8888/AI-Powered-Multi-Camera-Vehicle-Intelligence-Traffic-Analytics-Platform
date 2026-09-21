@@ -1,0 +1,15 @@
+{
+  "model": "YOLO11n",
+  "checkpoint": "plate_detector_baseline/weights/best.pt",
+  "training_seed": 42,
+  "dataset_images": 2083,
+  "test_images": 209,
+  "test_plate_instances": 224,
+  "precision": 0.98062,
+  "recall": 0.95536,
+  "mAP50": 0.98451,
+  "mAP50_95": 0.79437,
+  "status": "conditionally_promoted",
+  "negative_false_positive_rate": null,
+  "notes": "Four previously unlabeled test images were verified to contain plates and relabeled in-place before final evaluation. The corrected test set contains no genuine no-plate scenes, so false-positive robustness remains unestablished."
+}

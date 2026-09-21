@@ -1,0 +1,8 @@
+venv/
+.env
+__pycache__/
+*.pyc
+runtime/
+yolo11n.pt
+models/*.pt
+runs/

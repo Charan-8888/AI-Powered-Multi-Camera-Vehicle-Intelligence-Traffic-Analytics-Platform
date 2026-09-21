@@ -1,0 +1,20 @@
+# Credentials and local state
+.env
+*.sqlite3
+
+# Dependency/build caches
+venv/
+node_modules/
+frontend/dist/
+__pycache__/
+*.py[cod]
+runtime/
+runs/
+backend/staticfiles/
+
+# Large local datasets and downloaded test media
+data/datasets/
+data/test/*.mp4
+
+# Trained model artefacts are released deliberately, not as generated output.
+# Keep the production checkpoints in backend/models/ and backend/yolo11n.pt.
