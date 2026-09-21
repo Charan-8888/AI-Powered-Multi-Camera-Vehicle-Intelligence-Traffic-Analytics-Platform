@@ -146,7 +146,10 @@ STORAGES = {'staticfiles': {'BACKEND': 'whitenoise.storage.CompressedManifestSta
 
 # Permit the local frontend to call the development API during the MVP phase.
 CORS_ALLOW_ALL_ORIGINS = DEBUG
-CORS_ALLOWED_ORIGIN_REGEXES = [r'^https://[a-z0-9-]+\.vercel\.app$']
+CORS_ALLOWED_ORIGIN_REGEXES = [
+    r'^https://[a-z0-9-]+\.vercel\.app$',
+    r'^https://[a-z0-9-]+\.onrender\.com$',
+]
 CORS_ALLOWED_ORIGINS = [origin for origin in os.getenv('CORS_ALLOWED_ORIGINS', '').split(',') if origin]
 
 
