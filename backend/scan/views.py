@@ -359,17 +359,11 @@ def scan_image(request):
         if fallback:
             break
 
-    del plate_model
-    gc.collect()
-
     # ── Stage 3: OCR and DB Lookup ──────────────────────────────────
     all_detections: list[dict] = []
     seen_plates: set[str]      = set()
     
     if any(hits for veh, hits in all_plate_hits):
-        from cv_engine.ocr import PlateOCR
-        ocr = PlateOCR()
-        
         for veh, plate_hits in all_plate_hits:
             x1, y1, x2, y2 = veh['bbox']
             for hit in plate_hits:
