@@ -43,23 +43,7 @@ VEHICLE_CONF_LOW = 0.15   # second-pass threshold when nothing found
 PLATE_CONF          = 0.38   # when a vehicle crop is available
 PLATE_CONF_FALLBACK = 0.20   # when scanning the full image or sub-crops
 
-# ── Thread-safe lazy model singleton ─────────────────────────────────────────
-_lock   = threading.Lock()
-_models: dict = {}
-
-
-def _get_models():
-    if not _models:
-        with _lock:
-            if not _models:
-                from ultralytics import YOLO
-                from cv_engine.ocr import PlateOCR
-                _models['vehicle'] = YOLO(_YOLO_VEHICLE)
-                _models['plate']   = YOLO(_YOLO_PLATE)
-                _models['ocr']     = PlateOCR()
-    return _models['vehicle'], _models['plate'], _models['ocr']
-
-
+import gc
 # ── Preprocessing + correction utilities ─────────────────────────────────────
 from cv_engine.plate_preprocess import is_watermark, is_valid_plate_crop, best_ocr
 
@@ -286,20 +270,24 @@ def scan_image(request):
     fh, fw = frame.shape[:2]
     annotated = frame.copy()
 
-    vehicle_model, plate_model, ocr = _get_models()
+    from ultralytics import YOLO
 
     # ── Stage 1: vehicle detection (two-pass) ─────────────────────────────
+    vehicle_model = YOLO(_YOLO_VEHICLE)
     vehicle_detections = _detect_vehicles(vehicle_model, frame)
+    del vehicle_model
+    gc.collect()
+    
     fallback = not vehicle_detections
     if fallback:
         vehicle_detections = [{'vehicle_type': 'unknown',
                                 'confidence': 1.0,
                                 'bbox': [0, 0, fw, fh]}]
 
-    all_detections: list[dict] = []
-    seen_plates: set[str]      = set()
+    # ── Stage 2: plates per vehicle ──────────────────────────────────
+    plate_model = YOLO(_YOLO_PLATE)
+    all_plate_hits = []
 
-    # ── Stage 2 + 3: plates per vehicle ──────────────────────────────────
     for veh in vehicle_detections:
         x1, y1, x2, y2 = veh['bbox']
         x1, x2 = max(0, x1), min(fw, x2)
@@ -332,60 +320,78 @@ def scan_image(request):
                         'pcrop':      pcrop,
                     })
 
-        for hit in plate_hits:
-            ax1, ay1, ax2, ay2 = hit['abs_bbox']
-            pcrop = hit['pcrop']
-
-            # OCR with preprocessing + character correction
-            ocr_out    = best_ocr(ocr, pcrop)
-            normalized = ocr_out.get('normalized_text', '').strip()
-
-            # Watermark filter
-            if is_watermark(normalized):
-                _annotate(annotated, [x1, y1, x2, y2],
-                           [ax1, ay1, ax2, ay2],
-                           normalized or '?', ocr_out.get('confidence', 0),
-                           fallback, suppressed=True)
-                continue
-
-            # Annotate as valid plate
-            label = normalized or '?'
-            _annotate(annotated, [x1, y1, x2, y2],
-                       [ax1, ay1, ax2, ay2],
-                       label, ocr_out.get('confidence', 0),
-                       fallback, suppressed=False)
-
-            # DB lookup (once per unique plate)
-            db_key = normalized or f'__empty_{len(all_detections)}'
-            if db_key not in seen_plates:
-                seen_plates.add(db_key)
-                db_match = (
-                    _lookup_vehicle(normalized) if normalized
-                    else {'found': False, 'reason': 'OCR returned empty text.'}
-                )
-            else:
-                db_match = {
-                    'found':  False,
-                    'reason': 'Duplicate plate — see first occurrence.',
-                }
-
-            all_detections.append({
-                'plate':              normalized,
-                'ocr_raw':            ocr_out.get('text', ''),
-                'ocr_confidence':     round(ocr_out.get('confidence', 0), 4),
-                'plate_confidence':   round(hit['plate_conf'], 4),
-                'vehicle_type':       veh['vehicle_type'],
-                'vehicle_confidence': round(veh['confidence'], 4),
-                'plate_bbox':         [ax1, ay1, ax2, ay2],
-                'correction_applied': ocr_out.get('correction_applied', False),
-                'original_ocr':       ocr_out.get('original_ocr'),
-                'db_match':           db_match,
-            })
+        all_plate_hits.append((veh, plate_hits))
 
         # In fallback mode the multi-scale search covers the full frame —
         # no need to repeat for the next (identical) fallback vehicle entry
         if fallback:
             break
+
+    del plate_model
+    gc.collect()
+
+    # ── Stage 3: OCR and DB Lookup ──────────────────────────────────
+    all_detections: list[dict] = []
+    seen_plates: set[str]      = set()
+    
+    if any(hits for veh, hits in all_plate_hits):
+        from cv_engine.ocr import PlateOCR
+        ocr = PlateOCR()
+        
+        for veh, plate_hits in all_plate_hits:
+            x1, y1, x2, y2 = veh['bbox']
+            for hit in plate_hits:
+                ax1, ay1, ax2, ay2 = hit['abs_bbox']
+                pcrop = hit['pcrop']
+
+                # OCR with preprocessing + character correction
+                ocr_out    = best_ocr(ocr, pcrop)
+                normalized = ocr_out.get('normalized_text', '').strip()
+
+                # Watermark filter
+                if is_watermark(normalized):
+                    _annotate(annotated, [x1, y1, x2, y2],
+                               [ax1, ay1, ax2, ay2],
+                               normalized or '?', ocr_out.get('confidence', 0),
+                               fallback, suppressed=True)
+                    continue
+
+                # Annotate as valid plate
+                label = normalized or '?'
+                _annotate(annotated, [x1, y1, x2, y2],
+                           [ax1, ay1, ax2, ay2],
+                           label, ocr_out.get('confidence', 0),
+                           fallback, suppressed=False)
+
+                # DB lookup (once per unique plate)
+                db_key = normalized or f'__empty_{len(all_detections)}'
+                if db_key not in seen_plates:
+                    seen_plates.add(db_key)
+                    db_match = (
+                        _lookup_vehicle(normalized) if normalized
+                        else {'found': False, 'reason': 'OCR returned empty text.'}
+                    )
+                else:
+                    db_match = {
+                        'found':  False,
+                        'reason': 'Duplicate plate — see first occurrence.',
+                    }
+
+                all_detections.append({
+                    'plate':              normalized,
+                    'ocr_raw':            ocr_out.get('text', ''),
+                    'ocr_confidence':     round(ocr_out.get('confidence', 0), 4),
+                    'plate_confidence':   round(hit['plate_conf'], 4),
+                    'vehicle_type':       veh['vehicle_type'],
+                    'vehicle_confidence': round(veh['confidence'], 4),
+                    'plate_bbox':         [ax1, ay1, ax2, ay2],
+                    'correction_applied': ocr_out.get('correction_applied', False),
+                    'original_ocr':       ocr_out.get('original_ocr'),
+                    'db_match':           db_match,
+                })
+                
+        del ocr
+        gc.collect()
 
     return Response({
         'annotated_image':  _to_b64_jpeg(annotated),
